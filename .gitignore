@@ -8,3 +8,7 @@
 Makefile*
 
 *~
+/Build (GNU)/
+/Debug/
+/vcd2Tester/
+/vcd2FTTester/

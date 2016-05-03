@@ -38,3 +38,12 @@ COMPILEOPTS += `ppkg-config flo --cflags`
 LINKOPTS    += `ppkg-config flo --libs`
 LINKOPTS    += -lgmp -lgmpxx
 SOURCES     += vcd2Tester.c++
+
+# Converts a VCD file to a static FirrtlTerp harness
+BINARIES    += vcd2FTTester
+COMPILEOPTS += `ppkg-config libvcd --cflags`
+LINKOPTS    += `ppkg-config libvcd --libs`
+COMPILEOPTS += `ppkg-config flo --cflags`
+LINKOPTS    += `ppkg-config flo --libs`
+LINKOPTS    += -lgmp -lgmpxx
+SOURCES     += vcd2FTTester.c++
