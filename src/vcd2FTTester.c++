@@ -20,7 +20,10 @@
  */
 
 #include <libvcd/vcd.h++>
+#if FLO
 #include <libflo/flo.h++>
+#endif
+#include <limits.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
@@ -28,9 +31,11 @@
 #include <gmpxx.h>
 #include "version.h"
 
+#if FLO
 typedef libflo::node node;
 typedef libflo::operation<node> operation;
 typedef libflo::flo<node, operation> flo;
+#endif
 
 /* Name mangles a VCD name (with "::" or ":" as a seperator) into a
  * Chisel name (with "." as a seperator). */
@@ -49,9 +54,17 @@ int main(int argc, const char **argv)
         printf("vcd2Tester " PCONFIGURE_VERSION "\n");
         exit(0);
     }
-
-    if ((argc == 2 && (strcmp(argv[1], "--help") == 0)) || argc != 4) {
-        printf("vcd2Tester <TOP.vcd> <TOP.flo> <TOP.step>: Converts from VCD to Chisel Tester\n"
+#if FLO
+    const int minArgc = 4;
+#else
+    const int minArgc = 3;
+#endif
+    if ((argc == 2 && (strcmp(argv[1], "--help") == 0)) || argc != minArgc) {
+#if FLO
+        printf("vcd2Tester <TOP.vcd> <TOP.flo> <TOP.step>: Converts from VCD to FirtlTerp Tester\n"
+#else
+                printf("vcd2Tester <TOP.vcd> <TOP.step>: Converts from VCD to FirtlTerp Tester\n"
+#endif
                "  vcd2FINTTester converts a VCD file to a FIRRTL interpreter tester file\n"
                "\n"
                "  --version: Print the version number and exit\n"
@@ -70,25 +83,50 @@ class %s extends FlatSpec with Matchers {
 
 )";
     const auto epilog = R"(
+  }
 }
 )";
     /* Open the two files that we were given. */
-    libvcd::vcd vcd(argv[1]);
-    auto flo = flo::parse(argv[2]);
-    const auto fileName = std::string(argv[3]);
+    const int VCDFILE = 1;
+    libvcd::vcd vcd(argv[VCDFILE]);
+
+#if FLO
+    const int FLOFILE = 2;
+    auto flo = flo::parse(argv[FLOFILE]);
+    const auto moduleName = baseName(std::string(argv[FLOFILE]));
+    const int OUTFILE = 3;
+#else
+    const int OUTFILE = 2;
+    const std::string moduleName = "Torture";
+#endif
+    const auto fileName = std::string(argv[OUTFILE]);
     const auto className = baseName(fileName);
-    const auto moduleName = baseName(std::string(argv[2]));
     auto step = fopen(fileName.c_str(), "w");
     fprintf(step, prolog, moduleName.c_str(), className.c_str(), moduleName.c_str());
-    const char * indent = "  ";
+    const char * indent = "    ";
     const std::string::size_type moduleNameLength = moduleName.length();
 
     /* Build a map that contains the list of names that will be output
      * to the poke file. */
     std::unordered_map<std::string, bool> should_poke;
+#if FLO
     for (const auto& op: flo->operations())
         if (op->op() == libflo::opcode::IN)
             should_poke[vcd2chisel(op->d()->name())] = true;
+#else
+    for (const auto& vcd_name: vcd.all_long_names()) {
+        auto chisel_name = vcd2chisel(vcd_name);
+        std::string matchName = moduleName + ".io_in";
+        const char * op;
+        if (chisel_name.find(matchName) == 0) {
+        	should_poke[chisel_name] = true;
+        	op = "poke";
+        } else {
+            op = "peek";
+        }
+//        printf("%s: %s -> %s (%s)\n", op, vcd_name.c_str(), chisel_name.c_str(), matchName.c_str());
+    }
+#endif
 
     /* The remainder of the circuit can be computed from just its
      * inputs on every cycle.  Those can all be obtained from the VCD
