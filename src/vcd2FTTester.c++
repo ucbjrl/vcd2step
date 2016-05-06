@@ -27,6 +27,7 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
+#include <getopt.h>
 #include <unordered_map>
 #include <gmpxx.h>
 #include "version.h"
@@ -37,8 +38,8 @@ typedef libflo::operation<node> operation;
 typedef libflo::flo<node, operation> flo;
 #endif
 
-/* Name mangles a VCD name (with "::" or ":" as a seperator) into a
- * Chisel name (with "." as a seperator). */
+/* Name mangles a VCD name (with "::" or ":" as a separator) into a
+ * Chisel name (with "." as a separator). */
 static const std::string vcd2chisel(const std::string& vcd_name);
 
 /* Converts a binary-encoded string to a decimal-encoded string. */
@@ -48,62 +49,112 @@ static const std::string bits2int(const std::string& value_bits);
 
 static const std::string baseName(const std::string path);
 
-int main(int argc, const char **argv)
+void print_usage(FILE *f)
 {
-    if (argc == 2 && (strcmp(argv[1], "--version") == 0)) {
-        printf("vcd2Tester " PCONFIGURE_VERSION "\n");
-        exit(0);
-    }
 #if FLO
-    const int minArgc = 4;
+        fprintf(f, "vcd2FTTester <TOP.vcd> <TOP.flo> <TOP.step>: Converts from VCD to FirtlTerp Tester\n"
 #else
-    const int minArgc = 3;
+        fprintf(f, "vcd2FTTester [--scala <TOP.scala>] <TOP.vcd> <TOP.step>: Converts from VCD to FirtlTerp Tester\n"
 #endif
-    if ((argc == 2 && (strcmp(argv[1], "--help") == 0)) || argc != minArgc) {
-#if FLO
-        printf("vcd2Tester <TOP.vcd> <TOP.flo> <TOP.step>: Converts from VCD to FirtlTerp Tester\n"
-#else
-                printf("vcd2Tester <TOP.vcd> <TOP.step>: Converts from VCD to FirtlTerp Tester\n"
-#endif
-               "  vcd2FINTTester converts a VCD file to a FIRRTL interpreter tester file\n"
+               "  vcd2FTTester converts a VCD file to a FIRRTL interpreter tester file\n"
                "\n"
-               "  --version: Print the version number and exit\n"
-               "  --help:    Print this help text and exit\n"
+               "  --version: 		Print the version number and exit\n"
+               "  --help:    		Print this help text and exit\n"
+               "  --dut file.scala:	Include the DUT instead of using an \"import\"\n"
             );
-        exit(0);
+}
+
+int main(int argc, char *const * argv)
+{
+    struct option options[] = {
+        {"version", 0, NULL, 'v'},
+        {"help",    0, NULL, 'h'},
+        {"dut",     1, NULL, 'd'},
+        {NULL,      0, NULL, 0}
+    };
+#if FLO
+    const int minArgc = 3;
+#else
+    const int minArgc = 2;
+#endif
+    char * scalaFileName = NULL;
+    int opt;
+    while ((opt = getopt_long(argc, argv, "", options, NULL)) > 0) {
+        switch (opt) {
+        case 'v':
+            printf("vcd2Tester " PCONFIGURE_VERSION "\n");
+            exit(0);
+        case 'h':
+            print_usage(stdout);
+            exit(0);
+        case 'd':
+        	scalaFileName = optarg;
+        	break;
+        default:
+            print_usage(stderr);
+            exit(EXIT_FAILURE);
+        }
+
+    }
+
+    if (optind + minArgc > argc) {
+    	fprintf(stderr, "Insufficient arguments\n");
+        print_usage(stderr);
+        exit(EXIT_FAILURE);
     }
 
     const auto prolog = R"(
+%s
+import firrtl._
+import firrtl.interpreter._
 import org.scalatest.{Matchers, FlatSpec}
-import %s._
 
-class %s extends FlatSpec with Matchers {
+class %s(circuit: String) extends FlatSpec with Matchers {
+  behavior of "%s"
+
+  val interpreter = FirrtlTerp(circuit)
+
   it should "run with InterpretedTester too" in {
-    val x = new InterpretiveTester(%s) {
+    val x = new InterpretiveTester(circuit) {
 
 )";
     const auto epilog = R"(
+    }
   }
 }
 )";
-    /* Open the two files that we were given. */
-    const int VCDFILE = 1;
-    libvcd::vcd vcd(argv[VCDFILE]);
+    /* Open the files that we were given. */
+    libvcd::vcd vcd(argv[optind]);
 
 #if FLO
-    const int FLOFILE = 2;
+    const int FLOFILE = optind + 1;
     auto flo = flo::parse(argv[FLOFILE]);
     const auto moduleName = baseName(std::string(argv[FLOFILE]));
-    const int OUTFILE = 3;
+    const int OUTFILE = optind + 2;
 #else
-    const int OUTFILE = 2;
-    const std::string moduleName = "Torture";
+    const int OUTFILE = optind + 1;
+    const std::string moduleName = scalaFileName != NULL ? baseName(scalaFileName): "Torture";
 #endif
     const auto fileName = std::string(argv[OUTFILE]);
     const auto className = baseName(fileName);
     auto step = fopen(fileName.c_str(), "w");
-    fprintf(step, prolog, moduleName.c_str(), className.c_str(), moduleName.c_str());
-    const char * indent = "    ";
+    const std::string import = scalaFileName != NULL ? "" : "import " + moduleName + "._";
+	if (scalaFileName != NULL) {
+		auto scalaFile = fopen(scalaFileName, "r");
+		if (scalaFile == NULL) {
+			perror(scalaFileName);
+			exit(EXIT_FAILURE);
+		}
+		char buffer[4096];
+		int n;
+		while((n = fread(buffer, 1, sizeof(buffer), scalaFile)) > 0 ) {
+			fwrite(buffer, 1, n, step);
+		}
+		fclose(scalaFile);
+    }
+
+    fprintf(step, prolog, import.c_str(), className.c_str(), moduleName.c_str());
+    const char * indent = "      ";
     const std::string::size_type moduleNameLength = moduleName.length();
 
     /* Build a map that contains the list of names that will be output
@@ -117,14 +168,9 @@ class %s extends FlatSpec with Matchers {
     for (const auto& vcd_name: vcd.all_long_names()) {
         auto chisel_name = vcd2chisel(vcd_name);
         std::string matchName = moduleName + ".io_in";
-        const char * op;
         if (chisel_name.find(matchName) == 0) {
         	should_poke[chisel_name] = true;
-        	op = "poke";
-        } else {
-            op = "peek";
         }
-//        printf("%s: %s -> %s (%s)\n", op, vcd_name.c_str(), chisel_name.c_str(), matchName.c_str());
     }
 #endif
 
@@ -154,13 +200,13 @@ class %s extends FlatSpec with Matchers {
 
             /* Poke inputs. */
             if (should_poke.find(chisel_name) != should_poke.end()) {
-                fprintf(step, "%spoke(\"%s\", %s)\n",
+                fprintf(step, "%spoke(\"%s\", BigInt(\"%s\"))\n",
                 		indent,
     					cName.c_str(),
                         value_int.c_str()
                     );
             } else {
-                fprintf(step, "%sexpect(\"%s\", %s)\n",
+                fprintf(step, "%sexpect(\"%s\", BigInt(\"%s\"))\n",
                 		indent,
     					cName.c_str(),
                         value_int.c_str()
