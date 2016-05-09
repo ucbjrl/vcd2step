@@ -104,6 +104,8 @@ int main(int argc, char *const * argv)
     }
 
     const auto prolog = R"(
+package torture
+
 %s
 import firrtl._
 import firrtl.interpreter._
@@ -122,6 +124,15 @@ class %s(circuit: String) extends FlatSpec with Matchers {
     }
   }
 }
+
+object %s {
+  def main(args: Array[String]): Unit = {
+    val circuit = Chisel.Driver.elaborate(() => new Torture())
+    val circuitString = circuit.emit
+//    println(circuitString)
+    val dummy = new %s(circuitString)
+  }
+}
 )";
     /* Open the files that we were given. */
     libvcd::vcd vcd(argv[optind]);
@@ -138,7 +149,7 @@ class %s(circuit: String) extends FlatSpec with Matchers {
     const auto fileName = std::string(argv[OUTFILE]);
     const auto className = baseName(fileName);
     auto step = fopen(fileName.c_str(), "w");
-    const std::string import = scalaFileName != NULL ? "" : "import " + moduleName + "._";
+    const std::string import = scalaFileName != NULL ? "" : "import torture._";
 	if (scalaFileName != NULL) {
 		auto scalaFile = fopen(scalaFileName, "r");
 		if (scalaFile == NULL) {
@@ -218,7 +229,7 @@ class %s(circuit: String) extends FlatSpec with Matchers {
         fprintf(step, "%sstep(1)\n", indent);
     }
 
-    fprintf(step, epilog/*, className.c_str(), className.c_str()*/);
+    fprintf(step, epilog, className.c_str(), className.c_str());
     fclose(step);
 
     return 0;
