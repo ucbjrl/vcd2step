@@ -48,6 +48,8 @@ static const std::string bits2int(const std::string& value_bits);
 //                                  size_t start, size_t end);
 
 static const std::string baseName(const std::string path);
+static const std::string replaceExtension(const std::string path, const std::string newExtension);
+static const std::string noDirectory(const std::string path);
 
 void print_usage(FILE *f)
 {
@@ -70,8 +72,10 @@ int main(int argc, char *const * argv)
         {"version", 0, NULL, 'v'},
         {"help",    0, NULL, 'h'},
         {"dut",     1, NULL, 'd'},
+		{"verbose", 0, NULL, 'V'},
         {NULL,      0, NULL, 0}
     };
+    int verbose = false;
 #if FLO
     const int minArgc = 3;
 #else
@@ -90,40 +94,30 @@ int main(int argc, char *const * argv)
         case 'd':
         	scalaFileName = optarg;
         	break;
-        default:
+        case 'V':
+        	verbose = true;
+        	break;
+       default:
             print_usage(stderr);
             exit(EXIT_FAILURE);
         }
 
     }
-
     if (optind + minArgc > argc) {
     	fprintf(stderr, "Insufficient arguments\n");
         print_usage(stderr);
         exit(EXIT_FAILURE);
     }
 
-    const auto prolog = R"(
+    const auto scalaTester = R"(
 package torture
 
 %s
 import firrtl._
 import firrtl.interpreter._
 import org.scalatest.{Matchers, FlatSpec}
-
-class %s(circuit: String) extends FlatSpec with Matchers {
-  behavior of "%s"
-
-  val interpreter = FirrtlTerp(circuit)
-
-  it should "run with InterpretedTester too" in {
-    val x = new InterpretiveTester(circuit) {
-
-)";
-    const auto epilog = R"(
-    }
-  }
-}
+import scala.io.Source
+import %s._
 
 object %s {
   def main(args: Array[String]): Unit = {
@@ -132,6 +126,27 @@ object %s {
 //    println(circuitString)
     val dummy = new %s(circuitString)
   }
+}
+
+class %s(circuit: String) extends FlatSpec with Matchers {
+  behavior of "%s"
+
+    val x = new InterpretiveTester(circuit) {
+	  interpreter.setVerbose(%s)
+
+      step(10)
+
+      for (line <- Source.fromFile("%s").getLines()) {
+        val fields = line.split(" ")
+        val (op, port, value) = (fields(0), fields(1), fields(2))
+        op match {
+          case "e" => expect(port, BigInt(value))
+          case "p" => poke(port, BigInt(value))
+          case "s" => step(value.toInt)
+          case _ => System.err.println("unrecognized line " + line)
+        }
+      }
+    }
 }
 )";
     /* Open the files that we were given. */
@@ -148,7 +163,10 @@ object %s {
 #endif
     const auto fileName = std::string(argv[OUTFILE]);
     const auto className = baseName(fileName);
+    const auto dataName = replaceExtension(fileName, ".data");
+    const auto runtimeDataName = noDirectory(dataName);
     auto step = fopen(fileName.c_str(), "w");
+    auto data = fopen(dataName.c_str(), "w");
     const std::string import = scalaFileName != NULL ? "" : "import torture._";
 	if (scalaFileName != NULL) {
 		auto scalaFile = fopen(scalaFileName, "r");
@@ -164,8 +182,8 @@ object %s {
 		fclose(scalaFile);
     }
 
-    fprintf(step, prolog, import.c_str(), className.c_str(), moduleName.c_str());
-    const char * indent = "      ";
+    fprintf(step, scalaTester, import.c_str(), className.c_str(), className.c_str(), className.c_str(), className.c_str(), moduleName.c_str(), verbose ? "true" : "false", runtimeDataName.c_str());
+    fclose(step);
     const std::string::size_type moduleNameLength = moduleName.length();
 
     /* Build a map that contains the list of names that will be output
@@ -211,14 +229,12 @@ object %s {
 
             /* Poke inputs. */
             if (should_poke.find(chisel_name) != should_poke.end()) {
-                fprintf(step, "%spoke(\"%s\", BigInt(\"%s\"))\n",
-                		indent,
+                fprintf(data, "p %s %s\n",
     					cName.c_str(),
                         value_int.c_str()
                     );
             } else {
-                fprintf(step, "%sexpect(\"%s\", BigInt(\"%s\"))\n",
-                		indent,
+                fprintf(data, "e %s %s\n",
     					cName.c_str(),
                         value_int.c_str()
                     );
@@ -226,11 +242,9 @@ object %s {
 
         }
 
-        fprintf(step, "%sstep(1)\n", indent);
+        fprintf(data, "s 1 1\n");
     }
-
-    fprintf(step, epilog, className.c_str(), className.c_str());
-    fclose(step);
+    fclose(data);
 
     return 0;
 }
@@ -285,4 +299,19 @@ const std::string baseName(const std::string path) {
 	const std::string::size_type endP = (extension != path.npos ? extension - 1: path.length()) - directory;
 //	printf("baseName of %s (%lu, %lu)\n", path.c_str(), startP, endP);
 	return path.substr(startP, endP);
+}
+
+const std::string noDirectory(const std::string path) {
+	const std::string::size_type directory(path.find_last_of('/'));
+	const std::string::size_type startP = directory != path.npos ? directory + 1 : 0;
+	const std::string::size_type endP = path.length();
+//	printf("baseName of %s (%lu, %lu)\n", path.c_str(), startP, endP);
+	return path.substr(startP, endP);
+}
+
+const std::string replaceExtension(const std::string path, const std::string newExtension) {
+	const std::string::size_type extension(path.find_last_of('.'));
+	const std::string::size_type endP = (extension != path.npos ? extension : path.length());
+//	printf("baseName of %s (%lu, %lu)\n", path.c_str(), startP, endP);
+	return path.substr(0, endP) + newExtension;
 }
