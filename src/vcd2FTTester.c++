@@ -171,7 +171,9 @@ class %s extends FlatSpec with Matchers {
     val x = new InterpretiveTester(circuit) {
 	  interpreter.setVerbose(%s)
 
-      step(10)
+      poke("reset", BigInt(1))
+      step(1)
+      poke("reset", BigInt(0))
 
       for (line <- Source.fromFile("%s").getLines()) {
         val fields = line.split(" ")
@@ -183,6 +185,7 @@ class %s extends FlatSpec with Matchers {
           case _ => System.err.println("unrecognized line " + line)
         }
       }
+      report()
     }
 }
 )";
