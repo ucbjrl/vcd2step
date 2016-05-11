@@ -54,16 +54,23 @@ static const std::string noDirectory(const std::string path);
 void print_usage(FILE *f)
 {
 #if FLO
-        fprintf(f, "vcd2FTTester <TOP.vcd> <TOP.flo> <TOP.step>: Converts from VCD to FirtlTerp Tester\n"
+        fprintf(f, "vcd2step <TOP.vcd> <TOP.flo> <TOP.step>: Converts from VCD to FirtlTerp Tester\n"
+                "  vcd2step converts a VCD file to a Chisel tester file\n"
+                "\n"
+                "  --version: 		Print the version number and exit\n"
+                "  --help:    		Print this help text and exit\n"
+             );
 #else
-        fprintf(f, "vcd2FTTester [--scala <TOP.scala>] <TOP.vcd> <TOP.step>: Converts from VCD to FirtlTerp Tester\n"
+        fprintf(f, "vcd2FTTester [--chisel <TOP.scala>] <TOP.vcd> <TOP.step>: Converts from VCD to FirtlTerp Tester\n"
+                "  vcd2FTTester converts a VCD file to a Chisel or FIRRTL interpreter tester file\n"
+                "\n"
+                "  --version: 		Print the version number and exit\n"
+                "  --help:    		Print this help text and exit\n"
+        		"  --firrtl file.firrtl:	Include the FIRRTL version of the DUT\n"
+                "  --chisel file.scala:	Include the Chisel version of the DUT instead of using an \"import\"\n"
+        		"Note: only one of --firrtl or --chisel should be specified"
+             );
 #endif
-               "  vcd2FTTester converts a VCD file to a FIRRTL interpreter tester file\n"
-               "\n"
-               "  --version: 		Print the version number and exit\n"
-               "  --help:    		Print this help text and exit\n"
-               "  --dut file.scala:	Include the DUT instead of using an \"import\"\n"
-            );
 }
 
 int main(int argc, char *const * argv)
@@ -71,8 +78,9 @@ int main(int argc, char *const * argv)
     struct option options[] = {
         {"version", 0, NULL, 'v'},
         {"help",    0, NULL, 'h'},
-        {"dut",     1, NULL, 'd'},
-		{"verbose", 0, NULL, 'V'},
+        {"chisel",  1, NULL, 'c'},
+        {"verbose", 0, NULL, 'V'},
+        {"firrtl",  1, NULL, 'f'},
         {NULL,      0, NULL, 0}
     };
     int verbose = false;
@@ -81,7 +89,8 @@ int main(int argc, char *const * argv)
 #else
     const int minArgc = 2;
 #endif
-    char * scalaFileName = NULL;
+    char * chiselFileName = NULL;
+    char * firrtlFileName = NULL;
     int opt;
     while ((opt = getopt_long(argc, argv, "", options, NULL)) > 0) {
         switch (opt) {
@@ -91,11 +100,14 @@ int main(int argc, char *const * argv)
         case 'h':
             print_usage(stdout);
             exit(0);
-        case 'd':
-        	scalaFileName = optarg;
+        case 'c':
+        	chiselFileName = optarg;
         	break;
         case 'V':
         	verbose = true;
+        	break;
+        case 'f':
+        	firrtlFileName = optarg;
         	break;
        default:
             print_usage(stderr);
@@ -109,8 +121,12 @@ int main(int argc, char *const * argv)
         exit(EXIT_FAILURE);
     }
 
-    const auto scalaTester = R"(
-package torture
+    if (chiselFileName && firrtlFileName) {
+    	fprintf(stderr, "Can't specify both Chisel and FIRRTL files\n");
+        print_usage(stderr);
+        exit(EXIT_FAILURE);
+    }
+    const auto testerProlog = R"(
 
 %s
 import firrtl._
@@ -121,6 +137,9 @@ import %s._
 
 object %s {
   def main(args: Array[String]): Unit = {
+)";
+
+    const auto chiselProlog = R"(
     val circuit = Chisel.Driver.elaborate(() => new Torture())
     val circuitString = circuit.emit
 //    println(circuitString)
@@ -131,6 +150,24 @@ object %s {
 class %s(circuit: String) extends FlatSpec with Matchers {
   behavior of "%s"
 
+)";
+
+    const auto firrtlProlog = R"(
+    val dummy = new %s
+  }
+}
+
+class %s extends FlatSpec with Matchers {
+  behavior of "%s"
+
+  val circuit = """
+)";
+
+    const auto firrtlEpilog = R"(
+"""
+)";
+
+    const auto testerEpilog = R"(
     val x = new InterpretiveTester(circuit) {
 	  interpreter.setVerbose(%s)
 
@@ -159,7 +196,7 @@ class %s(circuit: String) extends FlatSpec with Matchers {
     const int OUTFILE = optind + 2;
 #else
     const int OUTFILE = optind + 1;
-    const std::string moduleName = scalaFileName != NULL ? baseName(scalaFileName): "Torture";
+    const std::string moduleName = chiselFileName != NULL ? baseName(chiselFileName): "Torture";
 #endif
     const auto fileName = std::string(argv[OUTFILE]);
     const auto className = baseName(fileName);
@@ -167,22 +204,43 @@ class %s(circuit: String) extends FlatSpec with Matchers {
     const auto runtimeDataName = noDirectory(dataName);
     auto step = fopen(fileName.c_str(), "w");
     auto data = fopen(dataName.c_str(), "w");
-    const std::string import = scalaFileName != NULL ? "" : "import torture._";
-	if (scalaFileName != NULL) {
-		auto scalaFile = fopen(scalaFileName, "r");
-		if (scalaFile == NULL) {
-			perror(scalaFileName);
+    const std::string import = chiselFileName != NULL ? "" : "import torture._";
+	if (chiselFileName != NULL) {
+		auto chiselFile = fopen(chiselFileName, "r");
+		if (chiselFile == NULL) {
+			perror(chiselFileName);
 			exit(EXIT_FAILURE);
 		}
 		char buffer[4096];
 		int n;
-		while((n = fread(buffer, 1, sizeof(buffer), scalaFile)) > 0 ) {
+		while((n = fread(buffer, 1, sizeof(buffer), chiselFile)) > 0 ) {
 			fwrite(buffer, 1, n, step);
 		}
-		fclose(scalaFile);
+		fclose(chiselFile);
+    } else {
+    	fprintf(step, "package torture\n\n");
+
     }
 
-    fprintf(step, scalaTester, import.c_str(), className.c_str(), className.c_str(), className.c_str(), className.c_str(), moduleName.c_str(), verbose ? "true" : "false", runtimeDataName.c_str());
+    fprintf(step, testerProlog, import.c_str(), className.c_str(), className.c_str());
+	if (firrtlFileName != NULL) {
+		auto firrtlFile = fopen(firrtlFileName, "r");
+		if (firrtlFile == NULL) {
+			perror(firrtlFileName);
+			exit(EXIT_FAILURE);
+		}
+	    fprintf(step, firrtlProlog, className.c_str(), className.c_str(), moduleName.c_str());
+		char buffer[4096];
+		int n;
+		while((n = fread(buffer, 1, sizeof(buffer), firrtlFile)) > 0 ) {
+			fwrite(buffer, 1, n, step);
+		}
+	    fprintf(step, firrtlEpilog);
+		fclose(firrtlFile);
+	} else {
+	    fprintf(step, chiselProlog, className.c_str(), className.c_str(), moduleName.c_str());
+	}
+    fprintf(step, testerEpilog, verbose ? "true" : "false", runtimeDataName.c_str());
     fclose(step);
     const std::string::size_type moduleNameLength = moduleName.length();
 
